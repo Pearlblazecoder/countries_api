@@ -1,6 +1,7 @@
 import requests
 import random
 from django.db import transaction
+from django.core.exceptions import ValidationError
 from .models import Country
 from django.utils import timezone
 from PIL import Image, ImageDraw, ImageFont
@@ -19,11 +20,11 @@ class CountryDataFetcher:
     def fetch_countries_data(self):
         """Fetch countries data from external API"""
         try:
-            print(f"Fetching countries data from: {settings.COUNTRIES_API_URL}")
+            print(f"Fetching countries from: {settings.COUNTRIES_API_URL}")
             response = requests.get(settings.COUNTRIES_API_URL, timeout=30)
             response.raise_for_status()
             data = response.json()
-            print(f"Successfully fetched {len(data)} countries")
+            print(f"Fetched {len(data)} countries")
             return data
         except requests.exceptions.Timeout:
             raise ExternalAPIError("Countries API timeout")
@@ -35,13 +36,13 @@ class CountryDataFetcher:
     def fetch_exchange_rates(self):
         """Fetch exchange rates from external API"""
         try:
-            print(f"Fetching exchange rates from: {settings.EXCHANGE_RATE_API_URL}")
+            print(f"💱 Fetching exchange rates from: {settings.EXCHANGE_RATE_API_URL}")
             response = requests.get(settings.EXCHANGE_RATE_API_URL, timeout=30)
             response.raise_for_status()
             data = response.json()
             if data.get('result') == 'success':
                 self.exchange_rates = data['rates']
-                print(f"Successfully fetched {len(self.exchange_rates)} exchange rates")
+                print(f"Fetched {len(self.exchange_rates)} exchange rates")
             else:
                 raise ExternalAPIError("Exchange rate API returned error")
         except requests.exceptions.Timeout:
@@ -85,7 +86,7 @@ class CountryDataFetcher:
         processed = 0
         created = 0
         updated = 0
-        errors = []
+        validation_errors = 0
         
         with transaction.atomic():
             for country_data in countries_data:
@@ -105,7 +106,7 @@ class CountryDataFetcher:
                     
                     # Calculate estimated GDP
                     estimated_gdp = None
-                    population = country_data.get('population')
+                    population = country_data.get('population', 0)  # Default to 0 if missing
                     if population and exchange_rate:
                         random_multiplier = random.uniform(1000, 2000)
                         gdp_value = (population * random_multiplier) / float(exchange_rate)
@@ -117,7 +118,7 @@ class CountryDataFetcher:
                         defaults={
                             'capital': country_data.get('capital'),
                             'region': country_data.get('region'),
-                            'population': population or 0,
+                            'population': population,
                             'currency_code': currency_code,
                             'exchange_rate': exchange_rate,
                             'estimated_gdp': estimated_gdp,
@@ -130,25 +131,23 @@ class CountryDataFetcher:
                         print(f"Created: {name}")
                     else:
                         updated += 1
-                        print(f"Updated: {name}")
+                        print(f" Updated: {name}")
                         
+                except ValidationError as e:
+                    validation_errors += 1
+                    print(f"Validation error for {country_data.get('name', 'Unknown')}: {e.message_dict}")
+                    continue
                 except Exception as e:
-                    error_msg = f"Error processing {country_data.get('name', 'Unknown')}: {str(e)}"
-                    errors.append(error_msg)
-                    print(error_msg)
+                    print(f"Error processing {country_data.get('name', 'Unknown')}: {str(e)}")
                     continue
         
-        print(f"Refresh completed: {processed} processed, {created} created, {updated} updated")
-        if errors:
-            print(f"Errors encountered: {len(errors)}")
-            for error in errors[:5]:  # Show first 5 errors
-                print(f"  - {error}")
+        print(f"Refresh completed: {processed} processed, {created} created, {updated} updated, {validation_errors} validation errors")
         
         return {
             'processed': processed,
             'created': created,
             'updated': updated,
-            'errors': len(errors)
+            'validation_errors': validation_errors
         }
 
 class SummaryImageGenerator:

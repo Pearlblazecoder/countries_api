@@ -7,9 +7,9 @@ class Country(models.Model):
     capital = models.CharField(max_length=100, blank=True, null=True)
     region = models.CharField(max_length=50, blank=True, null=True)
     population = models.BigIntegerField()
-    currency_code = models.CharField(max_length=3, blank=True, null=True)
-    exchange_rate = models.DecimalField(max_digits=20, decimal_places=10, blank=True, null=True)  
-    estimated_gdp = models.DecimalField(max_digits=30, decimal_places=10, blank=True, null=True) 
+    currency_code = models.CharField(max_length=3, blank=True, null=True)  # Made optional for countries without currency
+    exchange_rate = models.DecimalField(max_digits=20, decimal_places=10, blank=True, null=True)
+    estimated_gdp = models.DecimalField(max_digits=30, decimal_places=10, blank=True, null=True)
     flag_url = models.URLField(blank=True, null=True)
     last_refreshed_at = models.DateTimeField(auto_now=True)
     
@@ -20,6 +20,7 @@ class Country(models.Model):
     def clean(self):
         errors = {}
         
+        # Required fields validation
         if not self.name:
             errors['name'] = 'is required'
         if self.population is None:
@@ -35,7 +36,7 @@ class Country(models.Model):
         if self.population and self.exchange_rate:
             random_multiplier = random.uniform(1000, 2000)
             gdp = (self.population * random_multiplier) / float(self.exchange_rate)
-            return round(gdp, 10)  # Round to 10 decimal places
+            return round(gdp, 10)
         return None
     
     def save(self, *args, **kwargs):
@@ -45,10 +46,7 @@ class Country(models.Model):
         else:
             self.estimated_gdp = None
             
-        # Round exchange_rate to 10 decimal places if it exists
-        if self.exchange_rate:
-            self.exchange_rate = round(self.exchange_rate, 10)
-            
+        # Run validation before saving
         self.full_clean()
         super().save(*args, **kwargs)
     

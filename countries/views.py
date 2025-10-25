@@ -1,13 +1,13 @@
 from rest_framework import status, generics
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework.exceptions import NotFound, ValidationError
+from rest_framework.exceptions import NotFound
 from django.db.models import Q
 from django.http import HttpResponse
 import os
 
 from .models import Country
-from .serializers import CountrySerializer, RefreshResponseSerializer, StatusSerializer
+from .serializers import CountrySerializer
 from .utils import CountryDataFetcher, ExternalAPIError, SummaryImageGenerator
 from django.conf import settings
 
@@ -24,25 +24,17 @@ class RefreshCountriesView(APIView):
             
             # Generate summary image after refresh
             image_generator = SummaryImageGenerator()
-            image_path = image_generator.generate_summary_image()
+            image_generator.generate_summary_image()
             
             response_data = {
                 'message': 'Countries data refreshed successfully',
                 'countries_processed': result['processed'],
                 'countries_updated': result['updated'],
                 'countries_created': result['created'],
-                'errors': result.get('errors', 0)
+                'validation_errors': result.get('validation_errors', 0)
             }
             
-            if image_path:
-                response_data['image_generated'] = True
-            else:
-                response_data['image_generated'] = False
-            
-            serializer = RefreshResponseSerializer(data=response_data)
-            serializer.is_valid(raise_exception=True)
-            
-            return Response(serializer.data, status=status.HTTP_200_OK)
+            return Response(response_data, status=status.HTTP_200_OK)
             
         except ExternalAPIError as e:
             return Response({
@@ -52,8 +44,7 @@ class RefreshCountriesView(APIView):
             
         except Exception as e:
             return Response({
-                'error': 'Internal server error',
-                'details': str(e)
+                'error': 'Internal server error'
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class CountriesListView(generics.ListAPIView):
@@ -66,17 +57,7 @@ class CountriesListView(generics.ListAPIView):
     def get_queryset(self):
         queryset = Country.objects.all()
         
-        # Get all valid query parameters
-        valid_params = ['region', 'currency', 'sort', 'name']
-        provided_params = self.request.query_params.keys()
-        
-        # Check for invalid parameters
-        invalid_params = [param for param in provided_params if param not in valid_params]
-        if invalid_params:
-            # Return empty queryset for invalid parameters
-            return Country.objects.none()
-        
-        # Apply filters for valid parameters
+        # Apply filters
         region = self.request.query_params.get('region')
         if region:
             queryset = queryset.filter(region__iexact=region)
@@ -85,44 +66,30 @@ class CountriesListView(generics.ListAPIView):
         if currency:
             queryset = queryset.filter(currency_code__iexact=currency)
         
-        name = self.request.query_params.get('name')
-        if name:
-            queryset = queryset.filter(name__iexact=name)
-        
         # Apply sorting
         sort_by = self.request.query_params.get('sort')
-        sorting_map = {
-            'gdp_desc': '-estimated_gdp',
-            'gdp_asc': 'estimated_gdp',
-            'population_desc': '-population',
-            'population_asc': 'population',
-            'name_asc': 'name',
-            'name_desc': '-name',
-        }
-        
-        if sort_by in sorting_map:
-            if sort_by in ['gdp_desc', 'gdp_asc']:
-                queryset = queryset.exclude(estimated_gdp__isnull=True)
-            queryset = queryset.order_by(sorting_map[sort_by])
+        if sort_by == 'gdp_desc':
+            queryset = queryset.exclude(estimated_gdp__isnull=True).order_by('-estimated_gdp')
+        elif sort_by == 'gdp_asc':
+            queryset = queryset.exclude(estimated_gdp__isnull=True).order_by('estimated_gdp')
+        elif sort_by == 'population_desc':
+            queryset = queryset.order_by('-population')
+        elif sort_by == 'population_asc':
+            queryset = queryset.order_by('population')
+        elif sort_by == 'name_asc':
+            queryset = queryset.order_by('name')
+        elif sort_by == 'name_desc':
+            queryset = queryset.order_by('-name')
         else:
             queryset = queryset.order_by('name')
         
         return queryset
     
     def list(self, request, *args, **kwargs):
-        # Check for invalid parameters before processing
-        valid_params = ['region', 'currency', 'sort', 'name']
-        provided_params = request.query_params.keys()
-        invalid_params = [param for param in provided_params if param not in valid_params]
-        
-        if invalid_params:
-            return Response({
-                "error": "Invalid query parameters",
-                "invalid_parameters": invalid_params,
-                "valid_parameters": valid_params
-            }, status=status.HTTP_400_BAD_REQUEST)
-        
-        return super().list(request, *args, **kwargs)
+        # Return array instead of paginated response
+        queryset = self.filter_queryset(self.get_queryset())
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
 
 class CountryDetailView(APIView):
     """
@@ -136,29 +103,33 @@ class CountryDetailView(APIView):
             raise NotFound('Country not found')
     
     def get(self, request, name):
-        country = self.get_object(name)
-        serializer = CountrySerializer(country)
-        return Response(serializer.data)
+        try:
+            country = self.get_object(name)
+            serializer = CountrySerializer(country)
+            return Response(serializer.data)
+        except NotFound as e:
+            return Response({
+                'error': str(e)
+            }, status=status.HTTP_404_NOT_FOUND)
     
     def delete(self, request, name):
-        country = self.get_object(name)
-        country.delete()
-        return Response({
-            'message': f'Country {name} deleted successfully'
-        }, status=status.HTTP_200_OK)
+        try:
+            country = self.get_object(name)
+            country.delete()
+            return Response({
+                'message': f'Country {name} deleted successfully'
+            }, status=status.HTTP_200_OK)
+        except NotFound as e:
+            return Response({
+                'error': str(e)
+            }, status=status.HTTP_404_NOT_FOUND)
 
-class StatusView(generics.ListAPIView):
+class StatusView(APIView):
     """
     GET /status
-    Get API status and statistics using ListAPIView
+    Get API status and statistics
     """
-    serializer_class = StatusSerializer
-    
-    def get_queryset(self):
-        # Since this is not a model-based view, return a dummy queryset
-        return [None]
-    
-    def list(self, request, *args, **kwargs):
+    def get(self, request):
         total_countries = Country.objects.count()
         
         last_refresh_country = Country.objects.order_by('-last_refreshed_at').first()
@@ -169,8 +140,7 @@ class StatusView(generics.ListAPIView):
             'last_refreshed_at': last_refreshed_at
         }
         
-        serializer = self.get_serializer(status_data)
-        return Response(serializer.data)
+        return Response(status_data)
 
 class CountriesImageView(APIView):
     """
@@ -190,6 +160,24 @@ class CountriesImageView(APIView):
                 return HttpResponse(f.read(), content_type='image/png')
         except Exception as e:
             return Response({
-                'error': 'Internal server error',
-                'details': str(e)
+                'error': 'Internal server error'
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+# Simple validation test endpoint
+class ValidationTestView(APIView):
+    """
+    POST /validate-test
+    Test validation rules using the CountrySerializer
+    """
+    def post(self, request):
+        serializer = CountrySerializer(data=request.data)
+        
+        if not serializer.is_valid():
+            return Response({
+                'error': 'Validation failed',
+                'details': serializer.errors
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        return Response({
+            'message': 'Validation passed'
+        }, status=status.HTTP_200_OK)
