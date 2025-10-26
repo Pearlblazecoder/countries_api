@@ -37,7 +37,6 @@ class Country(models.Model):
         return None
     
     def save(self, *args, **kwargs):
-        # Calculate estimated GDP before saving
         if self.population and self.exchange_rate:
             self.estimated_gdp = self.calculate_estimated_gdp()
         else:
