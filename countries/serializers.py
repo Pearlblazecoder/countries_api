@@ -16,15 +16,11 @@ class CountrySerializer(serializers.ModelSerializer):
         Custom validation for required fields
         """
         errors = {}
-        
-        # Required fields validation
         if not data.get('name'):
             errors['name'] = 'is required'
         if data.get('population') is None:
             errors['population'] = 'is required'
-        if not data.get('currency_code'):
-            errors['currency_code'] = 'is required'
-        
+            
         if errors:
             raise serializers.ValidationError(errors)
         
@@ -35,7 +31,6 @@ class RefreshResponseSerializer(serializers.Serializer):
     countries_processed = serializers.IntegerField()
     countries_updated = serializers.IntegerField()
     countries_created = serializers.IntegerField()
-    validation_errors = serializers.IntegerField(required=False)
 
 class StatusSerializer(serializers.Serializer):
     total_countries = serializers.IntegerField()

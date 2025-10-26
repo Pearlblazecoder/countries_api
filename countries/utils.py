@@ -2,7 +2,7 @@ import requests
 import random
 from django.db import transaction
 from django.core.exceptions import ValidationError
-from .models import Country
+from .models import Country, GlobalSettings
 from django.utils import timezone
 from PIL import Image, ImageDraw, ImageFont
 import os
@@ -53,16 +53,11 @@ class CountryDataFetcher:
             raise ExternalAPIError(f"Could not fetch data from exchange rates API: {str(e)}")
     
     def get_currency_code(self, currencies):
-        """Extract currency code from currencies array"""
+        """Extract currency code from currencies array - FIRST currency only"""
         if not currencies or len(currencies) == 0:
-            return None
-        
-        # Get the first currency that has a code
-        for currency in currencies:
-            code = currency.get('code')
-            if code:
-                return code
-        return None
+            return None  
+        first_currency = currencies[0]
+        return first_currency.get('code')
     
     def get_exchange_rate(self, currency_code):
         """Get exchange rate for currency code"""
@@ -71,12 +66,11 @@ class CountryDataFetcher:
         
         rate = self.exchange_rates.get(currency_code)
         if rate:
-            # Round to 10 decimal places to match model
             return Decimal(str(rate)).quantize(Decimal('0.0000000001'), rounding=ROUND_HALF_UP)
-        return None
+        return None  
     
     def refresh_countries_data(self):
-        """Main method to refresh all countries data"""
+        """Main method to refresh all countries data - EXACTLY as per requirements"""
         # Fetch exchange rates first
         self.fetch_exchange_rates()
         
@@ -86,68 +80,81 @@ class CountryDataFetcher:
         processed = 0
         created = 0
         updated = 0
-        validation_errors = 0
         
         with transaction.atomic():
+            # Update global refresh timestamp at the start of transaction
+            global_settings, _ = GlobalSettings.objects.update_or_create(
+                key='last_global_refresh',
+                defaults={'value': timezone.now().isoformat()}
+            )
+            print(f"Global refresh timestamp updated: {global_settings.last_updated}")
+            
             for country_data in countries_data:
                 try:
                     processed += 1
                     
-                    # Extract basic data
+                  
                     name = country_data.get('name')
                     if not name:
-                        continue  # Skip countries without name
+                        continue 
                     
-                    # Extract currency code
-                    currency_code = self.get_currency_code(country_data.get('currencies', []))
+                    population = country_data.get('population', 0)
+                    currencies = country_data.get('currencies', [])
+                    currency_code = self.get_currency_code(currencies)
                     
-                    # Get exchange rate
-                    exchange_rate = self.get_exchange_rate(currency_code)
-                    
-                    # Calculate estimated GDP
+                    # IMPLEMENT EXACT CURRENCY HANDLING LOGIC FROM REQUIREMENTS:
+                    exchange_rate = None
                     estimated_gdp = None
-                    population = country_data.get('population', 0)  # Default to 0 if missing
-                    if population and exchange_rate:
-                        random_multiplier = random.uniform(1000, 2000)
-                        gdp_value = (population * random_multiplier) / float(exchange_rate)
-                        estimated_gdp = Decimal(str(gdp_value)).quantize(Decimal('0.0000000001'), rounding=ROUND_HALF_UP)
                     
-                    # Update or create country record
+                    if not currencies or not currency_code:
+                        currency_code = None  
+                        exchange_rate = None  
+                        estimated_gdp = 0     
+                    else:
+                        exchange_rate = self.get_exchange_rate(currency_code)
+                        
+                        if exchange_rate is None:
+                            estimated_gdp = None  
+                        else:
+                            
+                            random_multiplier = random.uniform(1000, 2000)
+                            gdp_value = (population * random_multiplier) / float(exchange_rate)
+                            estimated_gdp = Decimal(str(gdp_value)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+                    
+                    # REQUIREMENT: Still store the country record (in all cases)
                     country, created_flag = Country.objects.update_or_create(
                         name=name,
                         defaults={
                             'capital': country_data.get('capital'),
                             'region': country_data.get('region'),
                             'population': population,
-                            'currency_code': currency_code,
-                            'exchange_rate': exchange_rate,
-                            'estimated_gdp': estimated_gdp,
+                            'currency_code': currency_code,  
+                            'exchange_rate': exchange_rate,  
+                            'estimated_gdp': estimated_gdp,  
                             'flag_url': country_data.get('flag')
                         }
                     )
                     
                     if created_flag:
                         created += 1
-                        print(f"Created: {name}")
+                        print(f"Created: {name} (Currency: {currency_code}, GDP: {estimated_gdp})")
                     else:
                         updated += 1
-                        print(f" Updated: {name}")
+                        print(f"Updated: {name} (Currency: {currency_code}, GDP: {estimated_gdp})")
                         
                 except ValidationError as e:
-                    validation_errors += 1
                     print(f"Validation error for {country_data.get('name', 'Unknown')}: {e.message_dict}")
                     continue
                 except Exception as e:
                     print(f"Error processing {country_data.get('name', 'Unknown')}: {str(e)}")
                     continue
         
-        print(f"Refresh completed: {processed} processed, {created} created, {updated} updated, {validation_errors} validation errors")
+        print(f"🎉 Refresh completed: {processed} processed, {created} created, {updated} updated")
         
         return {
             'processed': processed,
             'created': created,
-            'updated': updated,
-            'validation_errors': validation_errors
+            'updated': updated
         }
 
 class SummaryImageGenerator:
@@ -158,11 +165,12 @@ class SummaryImageGenerator:
             # Get data for summary
             total_countries = Country.objects.count()
             top_countries = Country.objects.exclude(estimated_gdp__isnull=True).order_by('-estimated_gdp')[:5]
-            last_refresh = Country.objects.order_by('-last_refreshed_at').first()
             
-            if last_refresh:
-                last_refresh_time = last_refresh.last_refreshed_at
-            else:
+            # Use global refresh timestamp
+            try:
+                global_refresh = GlobalSettings.objects.get(key='last_global_refresh')
+                last_refresh_time = global_refresh.last_updated
+            except GlobalSettings.DoesNotExist:
                 last_refresh_time = timezone.now()
             
             # Create image
@@ -173,12 +181,10 @@ class SummaryImageGenerator:
             
             # Font sizes
             try:
-                # Try to use system fonts
                 large_font = ImageFont.truetype("arial.ttf", 32)
                 medium_font = ImageFont.truetype("arial.ttf", 24)
                 small_font = ImageFont.truetype("arial.ttf", 18)
             except IOError:
-                # Fallback to default font
                 large_font = ImageFont.load_default()
                 medium_font = ImageFont.load_default()
                 small_font = ImageFont.load_default()

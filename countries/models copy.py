@@ -7,9 +7,9 @@ class Country(models.Model):
     capital = models.CharField(max_length=100, blank=True, null=True)
     region = models.CharField(max_length=50, blank=True, null=True)
     population = models.BigIntegerField()
-    currency_code = models.CharField(max_length=3, blank=True, null=True)  # OPTIONAL for refresh behavior
-    exchange_rate = models.DecimalField(max_digits=20, decimal_places=10, blank=True, null=True)
-    estimated_gdp = models.DecimalField(max_digits=30, decimal_places=2, blank=True, null=True)
+    currency_code = models.CharField(max_length=3, blank=True, null=True)
+    exchange_rate = models.DecimalField(max_digits=20, decimal_places=10, blank=True, null=True)  
+    estimated_gdp = models.DecimalField(max_digits=30, decimal_places=10, blank=True, null=True) 
     flag_url = models.URLField(blank=True, null=True)
     last_refreshed_at = models.DateTimeField(auto_now=True)
     
@@ -24,6 +24,8 @@ class Country(models.Model):
             errors['name'] = 'is required'
         if self.population is None:
             errors['population'] = 'is required'
+        if not self.currency_code:
+            errors['currency_code'] = 'is required'
             
         if errors:
             raise ValidationError(errors)
@@ -33,7 +35,7 @@ class Country(models.Model):
         if self.population and self.exchange_rate:
             random_multiplier = random.uniform(1000, 2000)
             gdp = (self.population * random_multiplier) / float(self.exchange_rate)
-            return round(gdp, 2)
+            return round(gdp, 10)  # Round to 10 decimal places
         return None
     
     def save(self, *args, **kwargs):
@@ -43,16 +45,12 @@ class Country(models.Model):
         else:
             self.estimated_gdp = None
             
+        # Round exchange_rate to 10 decimal places if it exists
+        if self.exchange_rate:
+            self.exchange_rate = round(self.exchange_rate, 10)
+            
         self.full_clean()
         super().save(*args, **kwargs)
     
     def __str__(self):
         return self.name
-    
-class GlobalSettings(models.Model):
-    key = models.CharField(max_length=100, unique=True)
-    value = models.TextField()
-    last_updated = models.DateTimeField(auto_now=True)
-    
-    def __str__(self):
-        return f"{self.key}: {self.value}"
